@@ -6,6 +6,7 @@
 #include "error.h"
 #include "logger.h"
 #include "openssl/aes.h"
+#include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/rand.h"
 
@@ -246,8 +247,68 @@ int init_aes_key() {
 }
 
 /******************************initialize********************************/
+#define MUTEX_TYPE pthread_mutex_t
+#define MUTEX_SETUP(x) pthread_mutex_init(&(x), NULL)
+#define MUTEX_CLEANUP(x) pthread_mutex_destroy(&(x))
+#define MUTEX_LOCK(x) pthread_mutex_lock(&(x))
+#define MUTEX_UNLOCK(x) pthread_mutex_unlock(&(x))
+#define THREAD_ID pthread_self()
+
+void handle_error(const char *file, int lineno, const char *msg) {
+    fprintf(stderr, "** %s:%d %s\n", file, lineno, msg);
+    ERR_print_errors_fp(stderr);
+    /* exit(-1); */
+}
+
+/* This array will store all of the mutexes available to OpenSSL. */
+static MUTEX_TYPE *mutex_buf = NULL;
+
+static void locking_function(int mode, int n, const char *file, int line) {
+    if (mode & CRYPTO_LOCK)
+        MUTEX_LOCK(mutex_buf[n]);
+    else
+        MUTEX_UNLOCK(mutex_buf[n]);
+}
+
+static size_t id_function(void) { return ((size_t)THREAD_ID); }
+
+int OpenSSL_thread_setup(void) {
+    int i;
+
+    mutex_buf = malloc(CRYPTO_num_locks() * sizeof(MUTEX_TYPE));
+    if (!mutex_buf) return E_MEM;
+    for (i = 0; i < CRYPTO_num_locks(); i++) MUTEX_SETUP(mutex_buf[i]);
+    CRYPTO_set_id_callback(id_function);
+    CRYPTO_set_locking_callback(locking_function);
+    return E_OK;
+}
+
+int openssl_thread_cleanup(void) {
+    int i;
+
+    if (!mutex_buf) return E_PARAM;
+    CRYPTO_set_id_callback(NULL);
+    CRYPTO_set_locking_callback(NULL);
+    for (i = 0; i < CRYPTO_num_locks(); i++) MUTEX_CLEANUP(mutex_buf[i]);
+    free(mutex_buf);
+    mutex_buf = NULL;
+    return E_OK;
+}
+
+int init_OpenSSL() {
+    OpenSSL_add_all_ciphers();
+    OpenSSL_add_all_digests();
+    ERR_load_crypto_strings();
+
+    ERR_load_crypto_strings();
+    ERR_clear_error();
+
+    return OpenSSL_thread_setup();
+}
+
 int init_keys() {
     int ret = E_OK;
+    if ((ret = init_OpenSSL()) < 0) return ret;
     if ((ret = init_rand()) < 0) return ret;
     if ((ret = init_aes_key()) < 0) return ret;
 
