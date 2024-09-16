@@ -1,0 +1,12 @@
+
+FILE(GLOB_RECURSE SRCS_CS ${CMAKE_CURRENT_SOURCE_DIR}/*.c)
+
+set(SRCS ${SRCS_CS})
+
+add_library(${PROJECT_NAME} SHARED ${SRCS})
+target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+message(STATUS "SRC-DEPS_LIBS:${DEPS_LIBS}")
+target_link_libraries(${PROJECT_NAME} PUBLIC 
+	${DEPS_LIBS}
+	pthread
+)
