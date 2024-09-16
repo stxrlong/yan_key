@@ -22,6 +22,10 @@ int pubkey_to_key_context(struct key_context **ctx, const enum key_type type, co
 int prikey_to_key_context(struct key_context **ctx, const enum key_type type, const uint8_t *k,
                           const int len);
 /**
+ * @brief this is only used for RSA, we use RSA_PKCS1_PADDING in default
+ */
+int set_rsa_padding_to_key_context(struct key_context *ctx, const int padding);
+/**
  * @brief all key context should be freed by this func, otherwise, you will get memleak
  */
 void free_key_context(struct key_context *ctx);
