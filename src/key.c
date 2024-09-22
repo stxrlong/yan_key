@@ -381,11 +381,56 @@ err:
 
 int key_rsa_sign(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
                  int *slen) {
-    return E_NOTIMPL;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
+    int ret = E_OK, siglen = 0;
+
+    if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
+
+    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
+    if (unlikely(!rk->pkey)) return E_PARAM;
+
+    pkey_ctx = EVP_PKEY_CTX_new(rk->pkey, NULL /* no engine */);
+    if (!pkey_ctx) return E_RSA;                                           /* Error occurred */
+    if (EVP_PKEY_sign_init(pkey_ctx) < 1) goto err;                        /* Error */
+    if (EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, rk->padding) < 1) goto err; /* Error */
+
+    /* Determine buffer length */
+    if (EVP_PKEY_sign(pkey_ctx, NULL, (size_t *)&siglen, in, ilen) < 1) goto err;
+    logger_trace("*slen:%d, siglen:%d", *slen, siglen);
+    if ((*slen < siglen) ? (ret = E_BUFLEN) : 0) goto out;
+    if (EVP_PKEY_sign(pkey_ctx, sig, (size_t *)slen, in, ilen) == 1) goto out;
+    /* Signature is siglen bytes written to buffer sig */
+
+err:
+    ret = E_SIGN;
+
+out:
+    EVP_PKEY_CTX_free(pkey_ctx);
+    return ret;
 }
 int key_rsa_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
                    const uint8_t *sig, const int slen) {
-    return E_NOTIMPL;
+    EVP_PKEY_CTX *pkey_ctx = NULL;
+    int ret = E_OK;
+
+    if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
+
+    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
+    if (unlikely(!rk->pkey)) return E_PARAM;
+
+    pkey_ctx = EVP_PKEY_CTX_new(rk->pkey, NULL /* no engine */);
+    if (!pkey_ctx) return E_RSA;                                           /* Error occurred */
+    if (EVP_PKEY_verify_init(pkey_ctx) < 1) goto err;                      /* Error */
+    if (EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, rk->padding) < 1) goto err; /* Error */
+
+    if (EVP_PKEY_verify(pkey_ctx, sig, slen, in, ilen) == 1) goto out;
+
+err:
+    ret = E_VERIFY;
+
+out:
+    EVP_PKEY_CTX_free(pkey_ctx);
+    return ret;
 }
 
 struct key_operation key_rsa_operation = {&key_rsa_encrypt, &key_rsa_decrypt, &key_rsa_sign,
