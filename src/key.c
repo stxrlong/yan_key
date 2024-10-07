@@ -251,47 +251,89 @@ int init_aes_key() {
 }
 
 /***********************EVP for asymmetic key****************************/
-int key_evp_encrypt(EVP_PKEY_CTX *ctx, const uint8_t *in, const int ilen, uint8_t *out, int *olen) {
-    assert(ctx);
+struct evp_key {
+    void *key;
 
-    int ret = 0, buf_len = 0;
-    /* Calculate the size required to hold the encrypted data */
-    if (EVP_PKEY_encrypt(ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) return E_EVP;
-    logger_trace("encrypted buf len: %d", buf_len);
-    if (*olen < buf_len) return E_BUFLEN;
-    if (EVP_PKEY_encrypt(ctx, out, (size_t *)olen, in, ilen) < 1) return E_EVP;
+    int (*create)(EVP_PKEY_CTX **, void *);
+    void (*get_optional_params)(OSSL_PARAM *, void *);
+};
 
-    // fprintf(stdout, "encrypted:\n");
-    // BIO_dump_indent_fp(stdout, out, *olen, 2);
-    // fprintf(stdout, "\n");
+#define EVP_PKEY_OPERATOR(func, ctx, in, ilen, out, olen)                            \
+    EVP_PKEY_CTX *pkey_ctx = NULL;                                                   \
+    OSSL_PARAM params[5];                                                            \
+    int ret = E_OK, buf_len = 0;                                                     \
+                                                                                     \
+    if (unlikely(!ctx || !ctx->context || !in || !out)) return E_PARAM;              \
+    struct evp_key *ek = (struct evp_key *)(ctx->context);                           \
+    assert(ek->key && ek->create && ek->get_optional_params);                        \
+                                                                                     \
+    /* create evp pkey */                                                            \
+    if ((ret = ek->create(&pkey_ctx, ek->key)) < 0) goto out;                        \
+                                                                                     \
+    /* If no optional parameters are required then NULL can be passed */             \
+    ek->get_optional_params(params, ek->key);                                        \
+    if (EVP_PKEY_##func##_init_ex(pkey_ctx, params) < 1) goto err;                   \
+                                                                                     \
+    /* calculate the size required to hold the #func data */                         \
+    if (EVP_PKEY_##func(pkey_ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) goto err; \
+    if ((*olen < buf_len) ? (ret = E_BUFLEN) : 0) goto out;                          \
+    if (EVP_PKEY_##func(pkey_ctx, out, (size_t *)olen, in, ilen) == 1) goto out;     \
+                                                                                     \
+    /* fprintf(stdout, #func " result:\n"); */                                       \
+    /* BIO_dump_indent_fp(stdout, out, *olen, 2); */                                 \
+    /* fprintf(stdout, "\n"); */                                                     \
+                                                                                     \
+    err:                                                                             \
+    ret = E_EVP;                                                                     \
+    out:                                                                             \
+    EVP_PKEY_CTX_free(pkey_ctx);                                                     \
+    return ret;
 
-    return E_OK;
+int key_evp_encrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
+                    int *olen) {
+    EVP_PKEY_OPERATOR(encrypt, ctx, in, ilen, out, olen);
 }
-int key_evp_decrypt(EVP_PKEY_CTX *ctx, const uint8_t *in, const int ilen, uint8_t *out, int *olen) {
-    assert(ctx);
-
-    int ret = 0, buf_len = 0;
-    /* Calculate the size required to hold the decrypted data */
-    if (EVP_PKEY_decrypt(ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) return E_EVP;
-    logger_trace("decrypted buf len: %d", buf_len);
-    if (*olen < buf_len) return E_BUFLEN;
-    if (EVP_PKEY_decrypt(ctx, out, (size_t *)olen, in, ilen) < 1) return E_EVP;
-
-    // fprintf(stdout, "decrypted:\n");
-    // BIO_dump_indent_fp(stdout, out, *olen, 2);
-    // fprintf(stdout, "\n");
-
-    return E_OK;
+int key_evp_decrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
+                    int *olen) {
+    EVP_PKEY_OPERATOR(decrypt, ctx, in, ilen, out, olen);
 }
 
-int key_evp_sign(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
+int key_evp_sign(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
                  int *slen) {
-    return E_NOTIMPL;
+    EVP_PKEY_OPERATOR(sign, ctx, in, ilen, sig, slen);
 }
-int key_evp_verify(struct key_context *ctx, const uint8_t *in, const int ilen, const uint8_t *sig,
-                   const int slen) {
-    return E_NOTIMPL;
+int key_evp_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
+                   const uint8_t *sig, const int slen) {
+    EVP_PKEY_CTX *pkey_ctx = NULL;
+    OSSL_PARAM params[5];
+    int ret = E_OK, buf_len = 0;
+
+    if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
+    struct evp_key *ek = (struct evp_key *)(ctx->context);
+    assert(ek->key && ek->create && ek->get_optional_params);
+
+    /* create evp pkey */
+    if ((ret = ek->create(&pkey_ctx, ek->key)) < 0) goto out;
+
+    /* If no optional parameters are required then NULL can be passed */
+    ek->get_optional_params(params, ek->key);
+    if (EVP_PKEY_verify_init_ex(pkey_ctx, params) < 1) goto err;
+
+    if (EVP_PKEY_verify(pkey_ctx, sig, (size_t)slen, in, ilen) == 1) goto out;
+
+    /* fprintf(stdout, #func " result:\n"); */
+    /* BIO_dump_indent_fp(stdout, out, *olen, 2); */
+    /* fprintf(stdout, "\n"); */
+
+err:
+    ret = E_EVP;
+out:
+    EVP_PKEY_CTX_free(pkey_ctx);
+    return ret;
 }
+
+struct key_operation key_evp_operation = {&key_evp_encrypt, &key_evp_decrypt, &key_evp_sign,
+                                          &key_evp_verify};
 
 /*********************************RSA************************************/
 struct rsa_key {
@@ -299,8 +341,23 @@ struct rsa_key {
     int padding;
 };
 
-void set_rsa_optional_params(OSSL_PARAM *p, const struct rsa_key *rk) {
-    assert(p && rk);
+int create_rsa_evp_ctx(EVP_PKEY_CTX **ctx, void *k) {
+    assert(k);
+    struct rsa_key *rk = (struct rsa_key *)k;
+
+    assert(rk->pkey);
+    OSSL_LIB_CTX *libctx = NULL;
+    const char *propq = NULL;
+    (*ctx) = EVP_PKEY_CTX_new_from_pkey(libctx, rk->pkey, propq);
+    if (unlikely(!(*ctx))) return E_RSA;
+
+    return E_OK;
+}
+
+void get_rsa_optional_params(OSSL_PARAM *p, void *k) {
+    assert(p && k);
+    struct rsa_key *rk = (struct rsa_key *)k;
+
     /* 1. set padding */
     switch (rk->padding) {
             /* "pkcs1" is used by default if the padding mode is not set */
@@ -324,129 +381,23 @@ void set_rsa_optional_params(OSSL_PARAM *p, const struct rsa_key *rk) {
     *p = OSSL_PARAM_construct_end();
 }
 
-int key_rsa_encrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
-    EVP_PKEY_CTX *pkey_ctx = NULL;
-    OSSL_PARAM params[5];
-    int ret = E_OK;
-
-    if (unlikely(!ctx || !ctx->context || !in || !out)) return E_PARAM;
-
-    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
-    if (unlikely(!rk->pkey)) return E_PARAM;
-
-    OSSL_LIB_CTX *libctx = NULL;
-    const char *propq = NULL;
-    pkey_ctx = EVP_PKEY_CTX_new_from_pkey(libctx, rk->pkey, propq);
-    if (!pkey_ctx) goto err;
-
-    set_rsa_optional_params(params, rk);
-    /* If no optional parameters are required then NULL can be passed */
-    if (EVP_PKEY_encrypt_init_ex(pkey_ctx, params) < 1) goto err;
-
-    ret = key_evp_encrypt(pkey_ctx, in, ilen, out, olen);
-    if (ret < 0 && ret != E_BUFLEN) ret = E_RSA;
-
-err:
-    EVP_PKEY_CTX_free(pkey_ctx);
-    return ret;
-}
-int key_rsa_decrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
-    EVP_PKEY_CTX *pkey_ctx = NULL;
-    OSSL_PARAM params[5];
-    int ret = E_OK;
-
-    if (unlikely(!ctx || !ctx->context || !in || !out)) return E_PARAM;
-
-    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
-    if (unlikely(!rk->pkey)) return E_PARAM;
-
-    OSSL_LIB_CTX *libctx = NULL;
-    const char *propq = NULL;
-    pkey_ctx = EVP_PKEY_CTX_new_from_pkey(libctx, rk->pkey, propq);
-    if (!pkey_ctx) goto err;
-
-    set_rsa_optional_params(params, rk);
-    /* If no optional parameters are required then NULL can be passed */
-    if (EVP_PKEY_decrypt_init_ex(pkey_ctx, params) < 1) goto err;
-
-    ret = key_evp_decrypt(pkey_ctx, in, ilen, out, olen);
-    if (ret < 0 && ret != E_BUFLEN) ret = E_RSA;
-
-err:
-    EVP_PKEY_CTX_free(pkey_ctx);
-    return ret;
-}
-
-int key_rsa_sign(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
-                 int *slen) {
-    EVP_PKEY_CTX *pkey_ctx = NULL;
-    int ret = E_OK, siglen = 0;
-
-    if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
-
-    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
-    if (unlikely(!rk->pkey)) return E_PARAM;
-
-    pkey_ctx = EVP_PKEY_CTX_new(rk->pkey, NULL /* no engine */);
-    if (!pkey_ctx) return E_RSA;                                           /* Error occurred */
-    if (EVP_PKEY_sign_init(pkey_ctx) < 1) goto err;                        /* Error */
-    if (EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, rk->padding) < 1) goto err; /* Error */
-
-    /* Determine buffer length */
-    if (EVP_PKEY_sign(pkey_ctx, NULL, (size_t *)&siglen, in, ilen) < 1) goto err;
-    logger_trace("*slen:%d, siglen:%d", *slen, siglen);
-    if ((*slen < siglen) ? (ret = E_BUFLEN) : 0) goto out;
-    if (EVP_PKEY_sign(pkey_ctx, sig, (size_t *)slen, in, ilen) == 1) goto out;
-    /* Signature is siglen bytes written to buffer sig */
-
-err:
-    ret = E_SIGN;
-
-out:
-    EVP_PKEY_CTX_free(pkey_ctx);
-    return ret;
-}
-int key_rsa_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
-                   const uint8_t *sig, const int slen) {
-    EVP_PKEY_CTX *pkey_ctx = NULL;
-    int ret = E_OK;
-
-    if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
-
-    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
-    if (unlikely(!rk->pkey)) return E_PARAM;
-
-    pkey_ctx = EVP_PKEY_CTX_new(rk->pkey, NULL /* no engine */);
-    if (!pkey_ctx) return E_RSA;                                           /* Error occurred */
-    if (EVP_PKEY_verify_init(pkey_ctx) < 1) goto err;                      /* Error */
-    if (EVP_PKEY_CTX_set_rsa_padding(pkey_ctx, rk->padding) < 1) goto err; /* Error */
-
-    if (EVP_PKEY_verify(pkey_ctx, sig, slen, in, ilen) == 1) goto out;
-
-err:
-    ret = E_VERIFY;
-
-out:
-    EVP_PKEY_CTX_free(pkey_ctx);
-    return ret;
-}
-
-struct key_operation key_rsa_operation = {&key_rsa_encrypt, &key_rsa_decrypt, &key_rsa_sign,
-                                          &key_rsa_verify};
-
 void free_rsa_key(void *k) {
-    if (likely(k)) {
-        struct rsa_key *rk = (struct rsa_key *)k;
-        if (rk->pkey) {
-            EVP_PKEY_free(rk->pkey);
-            rk->pkey = NULL;
-        }
+    if (unlikely(k)) return;
 
-        free(rk);
+    struct evp_key *ek = (struct evp_key *)k;
+    assert(ek->key);
+
+    struct rsa_key *rk = (struct rsa_key *)(ek->key);
+    if (rk->pkey) {
+        EVP_PKEY_free(rk->pkey);
+        rk->pkey = NULL;
     }
+    free(rk);
+
+    ek->key = NULL;
+    free(ek);
 }
+
 int create_rsa_key(struct key_context *ctx, const enum key_type type) {
     EVP_PKEY_CTX *genctx = NULL;
     EVP_PKEY *pkey = NULL;
@@ -454,8 +405,9 @@ int create_rsa_key(struct key_context *ctx, const enum key_type type) {
     int ret = E_OK;
 
     /* create rsa context */
+    struct evp_key *ek = (struct evp_key *)malloc(sizeof(struct evp_key) + 1);
     struct rsa_key *rk = (struct rsa_key *)malloc(sizeof(struct rsa_key) + 1);
-    if ((!rk) ? (ret = E_MEM) : 0) goto err;
+    if ((!ek || !rk) ? (ret = E_MEM) : 0) goto err;
 
     /* Create context using RSA algorithm. "RSA-PSS" could also be used here. */
     OSSL_LIB_CTX *libctx = NULL;
@@ -512,9 +464,14 @@ int create_rsa_key(struct key_context *ctx, const enum key_type type) {
     assert(ctx);
     rk->pkey = pkey;
     rk->padding = RSA_PKCS1_PADDING;  // use pkcs1 padding in default
+
+    ek->key = (void *)rk;
+    ek->create = &create_rsa_evp_ctx;
+    ek->get_optional_params = &get_rsa_optional_params;
+
     ctx->type = type;
-    ctx->context = (void *)rk;
-    ctx->ops = &key_rsa_operation;
+    ctx->context = (void *)ek;
+    ctx->ops = &key_evp_operation;
     ctx->free_context = &free_rsa_key;
     return ret;
 
@@ -530,7 +487,9 @@ int set_rsa_padding_to_key_context(struct key_context *ctx, const int padding) {
     if (unlikely(!ctx || !ctx->context)) return E_PARAM;
     if (unlikely(ctx->type <= KEY_RSA_1024 || ctx->type >= KEY_RSA_2048)) return E_PARAM;
 
-    struct rsa_key *rk = (struct rsa_key *)(ctx->context);
+    struct evp_key *ek = (struct evp_key *)(ctx->context);
+    assert(ek->key);
+    struct rsa_key *rk = (struct rsa_key *)(ek->key);
     rk->padding = padding;
     return E_OK;
 }
