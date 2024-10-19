@@ -9,7 +9,9 @@
 
 #define FOR_EACH_KEY_ERROR(T)                              \
     T(100, RAND, "generate rand number failed")            \
-    T(150, AES, "encrypt/decrypt with aes failed")         \
+    T(101, ENCKEY, "please provide the password")          \
+    T(150, GENAES, "generate/import aes key failed")       \
+    T(151, AES, "encrypt/decrypt with aes failed")         \
     T(160, GENRSA, "generate rsa key failed")              \
     T(161, RSA, "create operator context with rsa failed") \
     T(170, GENEC, "generate ec key failed")                \

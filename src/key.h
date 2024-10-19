@@ -17,10 +17,13 @@ int init_keys();
  * @brief create a key context object
  */
 int create_key_context(struct key_context **ctx, const enum key_type type);
-int pubkey_to_key_context(struct key_context **ctx, const enum key_type type, const uint8_t *k,
-                          const int len);
-int prikey_to_key_context(struct key_context **ctx, const enum key_type type, const uint8_t *k,
-                          const int len);
+/**
+ * @brief change the key's storage format to key context
+ */
+int import_pubkey(struct key_context **ctx, const enum key_type type, const uint8_t *k,
+                  const int klen);
+int import_prikey(struct key_context **ctx, const enum key_type type, const uint8_t *k,
+                  const int klen, const struct key_context *passwd);
 
 /**
  * @brief get the key's storage format from key context, now we only support 'PEM'
