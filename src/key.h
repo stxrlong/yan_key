@@ -21,6 +21,18 @@ int pubkey_to_key_context(struct key_context **ctx, const enum key_type type, co
                           const int len);
 int prikey_to_key_context(struct key_context **ctx, const enum key_type type, const uint8_t *k,
                           const int len);
+
+/**
+ * @brief get the key's storage format from key context, now we only support 'PEM'
+ *
+ * there is a difference between pubkey and prikey, you can choose to export the
+ * prikey with encryption, if so, you must specify a symmetric key, if not, set
+ * the 'passwd' to NULL
+ */
+int export_pubkey(struct key_context *ctx, uint8_t *out, int *olen);
+int export_prikey(struct key_context *ctx, uint8_t *out, int *olen,
+                  const struct key_context *passwd);
+
 /**
  * @brief this is only used for RSA, we use RSA_PKCS1_PADDING in default
  */

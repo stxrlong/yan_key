@@ -28,6 +28,9 @@ struct key_operation {
     int (*sign)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, int *);
     int (*verify)(const struct key_context *ctx, const uint8_t *, const int, const uint8_t *,
                   const int);
+
+    int (*get_pubkey)(const struct key_context *ctx, uint8_t *, int *);
+    int (*get_prikey)(const struct key_context *ctx, uint8_t *, int *, const struct key_context *);
 };
 
 struct key_context {
@@ -118,6 +121,14 @@ int verify_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, 
     return KEY_CONTEXT_OPS(verify, in, ilen, sig, slen);
 }
 
+int export_pubkey(struct key_context *ctx, uint8_t *out, int *olen) {
+    return KEY_CONTEXT_OPS(get_pubkey, out, olen);
+}
+int export_prikey(struct key_context *ctx, uint8_t *out, int *olen,
+                  const struct key_context *passwd) {
+    return KEY_CONTEXT_OPS(get_prikey, out, olen, passwd);
+}
+
 #undef KEY_CONTEXT_OPS
 
 /******************************RAND********************************/
@@ -187,7 +198,41 @@ int key_aes_decrypt(const struct key_context *ctx, const uint8_t *in, const int 
     return key_aes_crypto(ctx, AES_DECRYPT, in, ilen, out, olen);
 }
 
-struct key_operation key_aes_operation = {&key_aes_encrypt, &key_aes_decrypt, NULL, NULL};
+int get_aes_key(const struct key_context *ctx, uint8_t *out, int *olen,
+                const struct key_context *passwd) {
+    uint8_t *key = NULL, *buf = NULL;
+    int klen = SYMMETRIC_KEY_LEN + BLOCK_SIZE, blen = SYMMETRIC_KEY_LEN * 2 + 1;
+    int ret = E_OK;
+
+    if (unlikely(!ctx || !ctx->context)) return E_PARAM;
+    struct symmetric_key *sk = (struct symmetric_key *)(ctx->context);
+    key = sk->key;
+    assert(key);
+
+    if (passwd) {
+        buf = (uint8_t *)malloc(blen);
+        if (unlikely(!buf)) return E_MEM;
+
+        if ((ret = key_aes_encrypt(passwd, sk->key, klen, buf, &blen)) < 0) goto err;
+
+        key = buf;
+        klen = blen;
+    }
+
+    if (*olen < (klen * 4 / 3 + 1)) {
+        ret = E_BUFLEN;
+        goto err;
+    }
+
+    *olen = EVP_EncodeBlock(out, key, klen);
+
+err:
+    free(buf);
+    return ret;
+}
+
+struct key_operation key_aes_operation = {&key_aes_encrypt, &key_aes_decrypt, NULL, NULL, NULL,
+                                          &get_aes_key};
 
 void free_aes_key(void *k) {
     if (likely(k)) {
@@ -341,8 +386,90 @@ out:
     return ret;
 }
 
+int get_evp_pubkey(const struct key_context *ctx, uint8_t *out, int *olen) {
+    BIO *bp = NULL;
+    int ret = E_OK, klen = 0;
+    if (unlikely(!ctx || !ctx->context || !out)) return E_PARAM;
+
+    switch (ctx->type) {
+        case KEY_RSA_2048:
+            klen = 512;
+            break;
+        case KEY_EC_P256:
+            klen = 256;
+            break;
+        default:
+            assert(0 && "unknow key_type");
+    }
+
+    if (*olen < klen) return E_BUFLEN;
+
+    bp = BIO_new(BIO_s_mem());
+    if (unlikely(!bp)) return E_MEM;
+
+    struct evp_key *ek = (struct evp_key *)(ctx->context);
+    assert(ek->pkey);
+    if (PEM_write_bio_PUBKEY(bp, ek->pkey) < 1) goto err;
+    *olen = BIO_read(bp, out, *olen);
+    if (*olen > 10) goto out;
+
+err:
+    ret = E_EVP;
+out:
+    BIO_free(bp);
+    return ret;
+}
+
+int get_evp_prikey(const struct key_context *ctx, uint8_t *out, int *olen,
+                   const struct key_context *passwd) {
+    BIO *bp = NULL;
+    const EVP_CIPHER *cipher = NULL;
+    const uint8_t *pass = NULL;
+    int passlen = 0;
+
+    int ret = E_OK, klen = 0;
+    if (unlikely(!ctx || !ctx->context || !out)) return E_PARAM;
+
+    switch (ctx->type) {
+        case KEY_RSA_2048:
+            klen = 2048;
+            break;
+        case KEY_EC_P256:
+            klen = 256;
+            break;
+        default:
+            assert(0 && "unknow key_type");
+    }
+
+    bp = BIO_new(BIO_s_mem());
+    if (unlikely(!bp)) return E_MEM;
+
+    struct evp_key *ek = (struct evp_key *)(ctx->context);
+    assert(ek->pkey);
+
+    if (passwd && passwd->context) {
+        struct symmetric_key *sk = (struct symmetric_key *)(passwd->context);
+        assert(sk->cipher);
+        cipher = sk->cipher;
+        pass = sk->key;
+        passlen = SYMMETRIC_KEY_LEN;
+
+        assert(cipher && passwd);
+    }
+
+    if (PEM_write_bio_PrivateKey(bp, ek->pkey, cipher, pass, passlen, NULL, NULL) < 1) goto err;
+    *olen = BIO_read(bp, out, *olen);
+    if (*olen > 10) goto out;
+
+err:
+    ret = E_EVP;
+out:
+    BIO_free(bp);
+    return ret;
+}
+
 struct key_operation key_evp_operation = {&key_evp_encrypt, &key_evp_decrypt, &key_evp_sign,
-                                          &key_evp_verify};
+                                          &key_evp_verify,  &get_evp_pubkey,  &get_evp_prikey};
 
 void free_evp_key(void *k) {
     if (unlikely(!k)) return;
@@ -507,7 +634,8 @@ void get_ec_optional_params(OSSL_PARAM *p, void *ep) {
     *p = OSSL_PARAM_construct_end();
 }
 
-struct key_operation key_ec_operation = {NULL, NULL, &key_evp_sign, &key_evp_verify};
+struct key_operation key_ec_operation = {
+    NULL, NULL, &key_evp_sign, &key_evp_verify, &get_evp_pubkey, &get_evp_prikey};
 
 const char *get_curve_name_by_key_type(const enum key_type type) {
     switch (type) {
