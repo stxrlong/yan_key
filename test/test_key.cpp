@@ -36,10 +36,10 @@ TEST(test_key, key_rsa) {
     ASSERT_TRUE(ctx != nullptr);
 
     const char *plaintext = "test key";
-	/**
-	 * @brief there is an error in encrypt with rsa, therefore, we need to add the following buffer
-	 */
-    uint8_t buffer[1]; 
+    /**
+     * @brief there is an error in encrypt with rsa, therefore, we need to add the following buffer
+     */
+    uint8_t buffer[1];
     uint8_t out[256];
     int olen = sizeof(out);
     ret = encrypt_with_key(ctx, (uint8_t *)plaintext, (int)strlen(plaintext), out, &olen);
@@ -58,6 +58,30 @@ TEST(test_key, key_rsa) {
     ASSERT_EQ(ret, 0);
     ASSERT_EQ(olen, 256);
     logger_info("plaintext: %s", plaintext);
+
+    ret = verify_with_key(ctx, (uint8_t *)plaintext, (int)strlen(plaintext), out, olen);
+    ASSERT_EQ(ret, 0);
+}
+
+TEST(test_key, key_ec) {
+    struct key_context *ctx = nullptr;
+    int ret = create_key_context(&ctx, KEY_EC_P256);
+    ASSERT_EQ(ret, 0);
+    ASSERT_TRUE(ctx != nullptr);
+
+    const char *plaintext = "test key";
+    /**
+     * @brief there is an error in encrypt with rsa, therefore, we need to add the following buffer
+     */
+    uint8_t buffer[1];
+    uint8_t out[256];
+    int olen = sizeof(out);
+    // sign and verify
+    memset(out, 0, sizeof(out));
+    olen = sizeof(out);
+    ret = sign_with_key(ctx, (uint8_t *)plaintext, (int)strlen(plaintext), out, &olen);
+    ASSERT_EQ(ret, 0);
+    logger_info("plaintext: %s, sig: %d", plaintext, olen);
 
     ret = verify_with_key(ctx, (uint8_t *)plaintext, (int)strlen(plaintext), out, olen);
     ASSERT_EQ(ret, 0);

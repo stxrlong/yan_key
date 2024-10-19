@@ -19,7 +19,7 @@
     T(RSA_1024)              \
     T(RSA_2048)              \
     T(RSA_4096)              \
-    T(ECDSA)
+    T(EC_P256)
 
 enum key_type {
     UNKNOWN_KEY_TYPE = 0,

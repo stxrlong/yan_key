@@ -19,7 +19,7 @@ struct super_key_operation {
     int (*import_prikey)(struct key_context *, const enum key_type, const uint8_t *, const int);
 };
 
-const struct super_key_operation *super_key_ops[KEY_TYPE_NUM - 1] = {0};
+const struct super_key_operation *super_key_ops[KEY_TYPE_NUM] = {0};
 
 struct key_operation {
     int (*encrypt)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, int *);
@@ -480,6 +480,8 @@ rsar:
     EVP_PKEY_free(pkey);
     ret = E_GENRSA;
 err:
+    free(ek);
+    free(rk);
     return ret;
 }
 
@@ -505,6 +507,136 @@ int init_rsa_key() {
 }
 
 /********************************ECDSA***********************************/
+struct ec_key {
+    EVP_PKEY *pkey;
+};
+
+int create_ec_evp_ctx(EVP_PKEY_CTX **ctx, void *k) {
+    assert(k);
+    struct ec_key *eck = (struct ec_key *)k;
+
+    assert(eck->pkey);
+    OSSL_LIB_CTX *libctx = NULL;
+    const char *propq = NULL;
+    (*ctx) = EVP_PKEY_CTX_new_from_pkey(libctx, eck->pkey, propq);
+    if (unlikely(!(*ctx))) return E_EC;
+
+    return E_OK;
+}
+
+void get_ec_optional_params(OSSL_PARAM *p, void *k) {
+    assert(p);
+
+    *p = OSSL_PARAM_construct_end();
+}
+
+int key_ec_sign(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
+                int *slen) {
+    return key_evp_sign(ctx, in, ilen, sig, slen);
+}
+int key_ec_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
+                  const uint8_t *sig, const int slen) {
+    return key_evp_verify(ctx, in, ilen, sig, slen);
+}
+
+struct key_operation key_ec_operation = {NULL, NULL, &key_ec_sign, &key_ec_verify};
+
+void free_ec_key(void *k) {
+    if (unlikely(k)) return;
+
+    struct evp_key *ek = (struct evp_key *)k;
+    assert(ek->key);
+
+    struct ec_key *eck = (struct ec_key *)(ek->key);
+    if (eck->pkey) {
+        EVP_PKEY_free(eck->pkey);
+        eck->pkey = NULL;
+    }
+    free(eck);
+
+    ek->key = NULL;
+    free(ek);
+}
+
+const char *get_curve_name_by_key_type(const enum key_type type) {
+    switch (type) {
+        case KEY_EC_P256:
+            return "P-256";
+        default:
+            return "";
+    }
+}
+
+int create_ec_key(struct key_context *ctx, const enum key_type type) {
+    EVP_PKEY_CTX *genctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    OSSL_PARAM params[5];
+    int use_cofactordh = 1;
+    int ret = E_OK;
+
+    const char *curvename = get_curve_name_by_key_type(type);
+    if (!curvename) return E_PARAM;
+
+    /* create ec key context */
+    struct evp_key *ek = (struct evp_key *)malloc(sizeof(struct evp_key) + 1);
+    struct ec_key *eck = (struct ec_key *)malloc(sizeof(struct ec_key) + 1);
+    if ((!ek || !eck) ? (ret = E_MEM) : 0) goto err;
+
+    /* Create context using EC algorithm. */
+    OSSL_LIB_CTX *libctx = NULL;
+    const char *propq = NULL;
+    if (!(genctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", propq))) goto ecr;
+
+    /* Initialize context for key generation purposes. */
+    if (EVP_PKEY_keygen_init(genctx) < 1) goto ecr;
+
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *)curvename, 0);
+    /*
+     * This is an optional parameter.
+     * For many curves where the cofactor is 1, setting this has no effect.
+     */
+    params[1] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_USE_COFACTOR_ECDH, &use_cofactordh);
+    params[2] = OSSL_PARAM_construct_end();
+
+    /* set params */
+    if (EVP_PKEY_CTX_set_params(genctx, params) < 1) goto ecr;
+
+    /* generate EC key */
+    if (EVP_PKEY_generate(genctx, &pkey) < 1) goto ecr;
+
+    /* free evp pkey context */
+    EVP_PKEY_CTX_free(genctx);
+
+    assert(ctx);
+    eck->pkey = pkey;
+
+    ek->key = (void *)eck;
+    ek->create = &create_ec_evp_ctx;
+    ek->get_optional_params = &get_ec_optional_params;
+
+    ctx->type = type;
+    ctx->context = (void *)ek;
+    ctx->ops = &key_ec_operation;
+    ctx->free_context = &free_ec_key;
+    return ret;
+
+ecr:
+    EVP_PKEY_CTX_free(genctx);
+    EVP_PKEY_free(pkey);
+    ret = E_GENEC;
+err:
+    free(ek);
+    free(eck);
+    return ret;
+}
+
+const struct super_key_operation super_ec_key_ops = {&create_ec_key, NULL, NULL};
+int init_ec_key() {
+    super_key_ops[KEY_EC_P256] = &super_ec_key_ops;
+
+    logger_trace("init ec key ok");
+    return E_OK;
+}
 
 /******************************initialize********************************/
 #define MUTEX_TYPE pthread_mutex_t
@@ -572,6 +704,7 @@ int init_keys() {
     if ((ret = init_rand()) < 0) return ret;
     if ((ret = init_aes_key()) < 0) return ret;
     if ((ret = init_rsa_key()) < 0) return ret;
+    if ((ret = init_ec_key()) < 0) return ret;
 
     logger_trace("init keys ok");
     return ret;
