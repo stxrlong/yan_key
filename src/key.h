@@ -32,8 +32,8 @@ int import_prikey(struct key_context **ctx, const enum key_type type, const uint
  * prikey with encryption, if so, you must specify a symmetric key, if not, set
  * the 'passwd' to NULL
  */
-int export_pubkey(struct key_context *ctx, uint8_t *out, int *olen);
-int export_prikey(struct key_context *ctx, uint8_t *out, int *olen,
+int export_pubkey(struct key_context *ctx, uint8_t *out, const int olen);
+int export_prikey(struct key_context *ctx, uint8_t *out, const int olen,
                   const struct key_context *passwd);
 
 /**
@@ -49,19 +49,19 @@ void free_key_context(struct key_context *ctx);
  * @brief operate with the key context
  */
 int encrypt_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                     int *olen);
+                     const int olen);
 int decrypt_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                     int *olen);
+                     const int olen);
 
 int sign_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
-                  int *slen);
+                  const int slen);
 int verify_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, const uint8_t *sig,
                     const int slen);
 
 /**
  * @brief base64 encrypt/decrypt
  */
-int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen);
-int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen);
+int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, const int olen);
+int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, const int olen);
 
 #endif

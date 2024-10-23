@@ -23,15 +23,16 @@ struct super_key_operation {
 const struct super_key_operation *super_key_ops[KEY_TYPE_NUM] = {0};
 
 struct key_operation {
-    int (*encrypt)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, int *);
-    int (*decrypt)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, int *);
+    int (*encrypt)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, const int);
+    int (*decrypt)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, const int);
 
-    int (*sign)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, int *);
+    int (*sign)(const struct key_context *ctx, const uint8_t *, const int, uint8_t *, const int);
     int (*verify)(const struct key_context *ctx, const uint8_t *, const int, const uint8_t *,
                   const int);
 
-    int (*get_pubkey)(const struct key_context *ctx, uint8_t *, int *);
-    int (*get_prikey)(const struct key_context *ctx, uint8_t *, int *, const struct key_context *);
+    int (*get_pubkey)(const struct key_context *ctx, uint8_t *, const int);
+    int (*get_prikey)(const struct key_context *ctx, uint8_t *, const int,
+                      const struct key_context *);
 };
 
 struct key_context {
@@ -106,16 +107,16 @@ void free_key_context(struct key_context *ctx) {
     })
 
 int encrypt_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                     int *olen) {
+                     const int olen) {
     return KEY_CONTEXT_OPS(encrypt, in, ilen, out, olen);
 }
 int decrypt_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                     int *olen) {
+                     const int olen) {
     return KEY_CONTEXT_OPS(decrypt, in, ilen, out, olen);
 }
 
 int sign_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
-                  int *slen) {
+                  const int slen) {
     return KEY_CONTEXT_OPS(sign, in, ilen, sig, slen);
 }
 int verify_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, const uint8_t *sig,
@@ -123,22 +124,22 @@ int verify_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, 
     return KEY_CONTEXT_OPS(verify, in, ilen, sig, slen);
 }
 
-int export_pubkey(struct key_context *ctx, uint8_t *out, int *olen) {
+int export_pubkey(struct key_context *ctx, uint8_t *out, const int olen) {
     return KEY_CONTEXT_OPS(get_pubkey, out, olen);
 }
-int export_prikey(struct key_context *ctx, uint8_t *out, int *olen,
+int export_prikey(struct key_context *ctx, uint8_t *out, const int olen,
                   const struct key_context *passwd) {
     return KEY_CONTEXT_OPS(get_prikey, out, olen, passwd);
 }
 
 #undef KEY_CONTEXT_OPS
 
-int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen) {
+int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, const int olen) {
     if (olen < (ilen * 4 / 3 + 1 + 1)) return E_BUFLEN;
 
     return EVP_EncodeBlock(out, in, ilen);
 }
-int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen) {
+int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, const int olen) {
     int ret = E_OK, i;
     if (olen < (ilen * 3 / 4 + 4)) return E_BUFLEN;
 
@@ -190,7 +191,7 @@ struct symmetric_key {
 
 /******************************AES********************************/
 int key_aes_crypto(const struct key_context *ctx, const int flag, const uint8_t *in, const int ilen,
-                   uint8_t *out, int *olen) {
+                   uint8_t *out, const int olen) {
     int ret = 0, tmp = 0, aes_flen = 0;
 
     assert(ctx && ctx->context);
@@ -201,27 +202,27 @@ int key_aes_crypto(const struct key_context *ctx, const int flag, const uint8_t 
     assert(sk->ctx && sk->cipher && in && out);
     tmp = EVP_CipherInit_ex(sk->ctx, sk->cipher, NULL, key, iv, flag);
     if (unlikely(tmp != 1 ? (ret = E_AES) : 0)) goto err;
-    tmp = EVP_CipherUpdate(sk->ctx, out, olen, in, ilen);
+    tmp = EVP_CipherUpdate(sk->ctx, out, &ret, in, ilen);
     if (unlikely(tmp != 1 ? (ret = E_AES) : 0)) goto err;
-    tmp = EVP_CipherFinal(sk->ctx, out + *olen, &aes_flen);
+    tmp = EVP_CipherFinal(sk->ctx, out + ret, &aes_flen);
     if (unlikely(tmp != 1 ? (ret = E_AES) : 0)) goto err;
 
-    *olen += aes_flen;
+    ret += aes_flen;
 
 err:
     EVP_CIPHER_CTX_reset(sk->ctx);
     return ret;
 }
 int key_aes_encrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
+                    const int olen) {
     return key_aes_crypto(ctx, AES_ENCRYPT, in, ilen, out, olen);
 }
 int key_aes_decrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
+                    const int olen) {
     return key_aes_crypto(ctx, AES_DECRYPT, in, ilen, out, olen);
 }
 
-int get_aes_key(const struct key_context *ctx, uint8_t *out, int *olen,
+int get_aes_key(const struct key_context *ctx, uint8_t *out, const int olen,
                 const struct key_context *passwd) {
     uint8_t *key = NULL, *buf = NULL;
     int klen = SYMMETRIC_KEY_LEN + BLOCK_SIZE, blen = ((SYMMETRIC_KEY_LEN + 1) << 2);
@@ -236,21 +237,20 @@ int get_aes_key(const struct key_context *ctx, uint8_t *out, int *olen,
         buf = (uint8_t *)malloc(blen);
         if (unlikely(!buf)) return E_MEM;
 
-        if ((ret = key_aes_encrypt(passwd, sk->key, klen, buf, &blen)) < 0) goto err;
+        if ((ret = key_aes_encrypt(passwd, sk->key, klen, buf, blen)) < 0) goto err;
 
         key = buf;
-        klen = blen;
+        klen = ret;
 
         *out = 'e';
     } else {
         *out = 'p';
     }
 
-    ret = base64_encrypt(key, klen, ++out, *olen);
+    ret = base64_encrypt(key, klen, ++out, olen);
     if (ret < 0) goto err;
 
-    (*olen) = ret + 1;
-    ret = E_OK;
+    ret += 1;
 
 err:
     free(buf);
@@ -343,8 +343,8 @@ int import_aes_key(struct key_context *ctx, const enum key_type type, const uint
                 ret = E_GENAES;
                 goto err;
             }
-            tmp = sizeof(sk->key);
-            if ((ret = key_aes_decrypt(passwd, buf, ret, sk->key, &tmp)) < 0) goto err;
+            if ((ret = key_aes_decrypt(passwd, buf, ret, sk->key, sizeof(sk->key))) < 0) goto err;
+            ret = E_OK;
         } break;
         default:
             return E_PARAM;
@@ -432,30 +432,30 @@ struct evp_key {
                                                                                      \
     /* calculate the size required to hold the #func data */                         \
     if (EVP_PKEY_##func(pkey_ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) goto err; \
-    if ((*olen < buf_len) ? (ret = E_BUFLEN) : 0) goto out;                          \
-    if (EVP_PKEY_##func(pkey_ctx, out, (size_t *)olen, in, ilen) == 1) goto out;     \
+    if ((olen < buf_len) ? (ret = E_BUFLEN) : 0) goto out;                           \
+    if (EVP_PKEY_##func(pkey_ctx, out, (size_t *)(&ret), in, ilen) == 1) goto out;   \
                                                                                      \
     /* fprintf(stdout, #func " result:\n"); */                                       \
-    /* BIO_dump_indent_fp(stdout, out, *olen, 2); */                                 \
+    /* BIO_dump_indent_fp(stdout, out, ret, 2); */                                   \
     /* fprintf(stdout, "\n"); */                                                     \
                                                                                      \
     err:                                                                             \
     ret = E_EVP;                                                                     \
     out:                                                                             \
-    EVP_PKEY_CTX_free(pkey_ctx);                                                     \
+    /* EVP_PKEY_CTX_free(pkey_ctx); */                                               \
     return ret;
 
 int key_evp_encrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
+                    const int olen) {
     EVP_PKEY_OPERATOR(encrypt, ctx, in, ilen, out, olen);
 }
 int key_evp_decrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
-                    int *olen) {
+                    const int olen) {
     EVP_PKEY_OPERATOR(decrypt, ctx, in, ilen, out, olen);
 }
 
 int key_evp_sign(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *sig,
-                 int *slen) {
+                 const int slen) {
     EVP_PKEY_OPERATOR(sign, ctx, in, ilen, sig, slen);
 }
 int key_evp_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
@@ -496,7 +496,7 @@ out:
     return ret;
 }
 
-int get_evp_pubkey(const struct key_context *ctx, uint8_t *out, int *olen) {
+int get_evp_pubkey(const struct key_context *ctx, uint8_t *out, const int olen) {
     BIO *bp = NULL;
     int ret = E_OK, klen = 0;
     if (unlikely(!ctx || !ctx->context || !out)) return E_PARAM;
@@ -512,7 +512,7 @@ int get_evp_pubkey(const struct key_context *ctx, uint8_t *out, int *olen) {
             assert(0 && "unknow key_type");
     }
 
-    if (*olen < klen) return E_BUFLEN;
+    if (olen < klen) return E_BUFLEN;
 
     bp = BIO_new(BIO_s_mem());
     if (unlikely(!bp)) return E_MEM;
@@ -520,8 +520,8 @@ int get_evp_pubkey(const struct key_context *ctx, uint8_t *out, int *olen) {
     struct evp_key *ek = (struct evp_key *)(ctx->context);
     assert(ek->pkey);
     if (PEM_write_bio_PUBKEY(bp, ek->pkey) < 1) goto err;
-    *olen = BIO_read(bp, out, *olen);
-    if (*olen > 10) goto out;
+    ret = BIO_read(bp, out, olen);
+    if (ret > 10) goto out;
 
 err:
     ret = E_EVP;
@@ -530,7 +530,7 @@ out:
     return ret;
 }
 
-int get_evp_prikey(const struct key_context *ctx, uint8_t *out, int *olen,
+int get_evp_prikey(const struct key_context *ctx, uint8_t *out, const int olen,
                    const struct key_context *passwd) {
     BIO *bp = NULL;
     const EVP_CIPHER *cipher = NULL;
@@ -569,8 +569,8 @@ int get_evp_prikey(const struct key_context *ctx, uint8_t *out, int *olen,
      * `PEM_read_bio_PrivateKey` has no arguments 'kstr' and 'klen'
      */
     if (PEM_write_bio_PrivateKey(bp, ek->pkey, cipher, NULL, 0, NULL, (void *)pass) < 1) goto err;
-    *olen = BIO_read(bp, out, *olen);
-    if (*olen > 10) goto out;
+    ret = BIO_read(bp, out, olen);
+    if (ret > 10) goto out;
 
 err:
     ret = E_EVP;
