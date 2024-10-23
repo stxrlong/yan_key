@@ -58,4 +58,10 @@ int sign_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, ui
 int verify_with_key(struct key_context *ctx, const uint8_t *in, const int ilen, const uint8_t *sig,
                     const int slen);
 
+/**
+ * @brief base64 encrypt/decrypt
+ */
+int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen);
+int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen);
+
 #endif

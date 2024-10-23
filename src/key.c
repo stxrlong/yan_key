@@ -43,28 +43,28 @@ struct key_context {
     void (*free_context)(void *);
 };
 
-#define CREATE_KEY_CONTEXT(ops, args...)                                                     \
-    ({                                                                                       \
-        int ret = E_PARAM;                                                                   \
-        if (likely(type > UNKNOWN_KEY_TYPE && type < KEY_TYPE_NUM)) {                        \
-            const struct super_key_operation *sko = super_key_ops[type];                     \
-            if (likely(sko && sko->ops)) {                                                   \
-                if (!(*ctx)) {                                                               \
-                    *ctx = (struct key_context *)calloc(1, sizeof(struct key_context) + 1);  \
-                }                                                                            \
-                if (likely(*ctx)) {                                                          \
-                    ret = sko->ops(*ctx, ##args);                                            \
-                    if (unlikely(ret < 0)) free(*ctx);                                       \
-                } else {                                                                     \
-                    ret = E_MEM;                                                             \
-                }                                                                            \
-            } else {                                                                         \
-                ret = E_NOTIMPL;                                                             \
-            }                                                                                \
-        }                                                                                    \
-        if (ret < 0)                                                                         \
-            logger_error("create key[%s] failed: %s", get_key_type(type), get_err_msg(ret)); \
-        ret;                                                                                 \
+#define CREATE_KEY_CONTEXT(ops, args...)                                                       \
+    ({                                                                                         \
+        int ret = E_PARAM;                                                                     \
+        if (likely(type > UNKNOWN_KEY_TYPE && type < KEY_TYPE_NUM)) {                          \
+            const struct super_key_operation *sko = super_key_ops[type];                       \
+            if (likely(sko && sko->ops)) {                                                     \
+                if (!(*ctx)) {                                                                 \
+                    *ctx = (struct key_context *)calloc(1, sizeof(struct key_context) + 1);    \
+                }                                                                              \
+                if (likely(*ctx)) {                                                            \
+                    ret = sko->ops(*ctx, ##args);                                              \
+                    if (unlikely(ret < 0)) free(*ctx);                                         \
+                } else {                                                                       \
+                    ret = E_MEM;                                                               \
+                }                                                                              \
+            } else {                                                                           \
+                ret = E_NOTIMPL;                                                               \
+            }                                                                                  \
+        }                                                                                      \
+        if (ret < 0)                                                                           \
+            logger_error("%s key[%s] failed: %s", #ops, get_key_type(type), get_err_msg(ret)); \
+        ret;                                                                                   \
     })
 
 int create_key_context(struct key_context **ctx, const enum key_type type) {
@@ -132,6 +132,27 @@ int export_prikey(struct key_context *ctx, uint8_t *out, int *olen,
 }
 
 #undef KEY_CONTEXT_OPS
+
+int base64_encrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen) {
+    if (olen < (ilen * 4 / 3 + 1 + 1)) return E_BUFLEN;
+
+    return EVP_EncodeBlock(out, in, ilen);
+}
+int base64_decrypt(const uint8_t *in, const int ilen, uint8_t *out, int olen) {
+    int ret = E_OK, i;
+    if (olen < (ilen * 3 / 4 + 4)) return E_BUFLEN;
+
+    ret = EVP_DecodeBlock(out, in, ilen);
+    if (ret == -1) return E_BASE64;
+
+    for (i = ilen - 1; i > 0; --i) {
+        if (*(in + i) != '=') break;
+        --ret;
+        if (i < ilen - 2) return E_BASE64;
+    }
+
+    return ret;
+}
 
 /******************************RAND********************************/
 #ifdef __GNUC__
@@ -225,13 +246,11 @@ int get_aes_key(const struct key_context *ctx, uint8_t *out, int *olen,
         *out = 'p';
     }
 
-    if (*olen < (klen * 4 / 3 + 1 + 1)) {
-        ret = E_BUFLEN;
-        goto err;
-    }
+    ret = base64_encrypt(key, klen, ++out, *olen);
+    if (ret < 0) goto err;
 
-    *olen = EVP_EncodeBlock(++out, key, klen);
-    (*olen) += 1;
+    (*olen) = ret + 1;
+    ret = E_OK;
 
 err:
     free(buf);
@@ -309,12 +328,7 @@ int import_aes_key(struct key_context *ctx, const enum key_type type, const uint
 
     switch (*k) {
         case 'p': {
-            if (klen > ((SYMMETRIC_KEY_LEN + BLOCK_SIZE) * 4 / 3 + 4)) {
-                ret = E_PARAM;
-                goto err;
-            }
-
-            ret = EVP_DecodeBlock(sk->key, ++k, klen - 1);
+            ret = base64_decrypt(++k, klen - 1, sk->key, SYMMETRIC_KEY_LEN << 2);
             if (ret != SYMMETRIC_KEY_LEN + BLOCK_SIZE) {
                 ret = E_GENAES;
                 goto err;
@@ -322,20 +336,15 @@ int import_aes_key(struct key_context *ctx, const enum key_type type, const uint
             ret = E_OK;
         } break;
         case 'e': {
-            if (klen > ((SYMMETRIC_KEY_LEN << 1) * 4 / 3 + 4)) {
-                ret = E_PARAM;
-                goto err;
-            }
-
             if (!passwd) return E_ENCKEY;
 
-            ret = EVP_DecodeBlock(buf, ++k, klen - 1);
-            // if (ret - 2 != blen) {
-            //     ret = E_GENAES;
-            //     goto err;
-            // }
+            ret = base64_decrypt(++k, klen - 1, buf, SYMMETRIC_KEY_LEN << 2);
+            if (ret != (SYMMETRIC_KEY_LEN << 1)) {
+                ret = E_GENAES;
+                goto err;
+            }
             tmp = sizeof(sk->key);
-            if ((ret = key_aes_decrypt(passwd, buf, ret - 2, sk->key, &tmp)) < 0) goto err;
+            if ((ret = key_aes_decrypt(passwd, buf, ret, sk->key, &tmp)) < 0) goto err;
         } break;
         default:
             return E_PARAM;
@@ -555,10 +564,10 @@ int get_evp_prikey(const struct key_context *ctx, uint8_t *out, int *olen,
         assert(cipher && passwd);
     }
 
-	/**
-	 * @attention we choose the last argument to deliver the password due to the
-	 * `PEM_read_bio_PrivateKey` has no arguments 'kstr' and 'klen'
-	 */
+    /**
+     * @attention we choose the last argument to deliver the password due to the
+     * `PEM_read_bio_PrivateKey` has no arguments 'kstr' and 'klen'
+     */
     if (PEM_write_bio_PrivateKey(bp, ek->pkey, cipher, NULL, 0, NULL, (void *)pass) < 1) goto err;
     *olen = BIO_read(bp, out, *olen);
     if (*olen > 10) goto out;
