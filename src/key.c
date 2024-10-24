@@ -766,7 +766,7 @@ int set_rsa_padding_to_key_context(struct key_context *ctx, const int padding) {
     struct rsa_param *rp = NULL;
 
     if (unlikely(!ctx || !ctx->context)) return E_PARAM;
-    if (unlikely(ctx->type <= KEY_RSA_1024 || ctx->type >= KEY_RSA_2048)) return E_PARAM;
+    if (unlikely(ctx->type < KEY_RSA_1024 || ctx->type > KEY_RSA_4096)) return E_PARAM;
 
     struct evp_key *ek = (struct evp_key *)(ctx->context);
     if (ek->param) {
