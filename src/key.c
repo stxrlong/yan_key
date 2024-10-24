@@ -7,7 +7,6 @@
 #include "logger.h"
 #include "openssl/aes.h"
 #include "openssl/bio.h"
-#include "openssl/core_names.h"
 #include "openssl/err.h"
 #include "openssl/evp.h"
 #include "openssl/pem.h"
@@ -401,48 +400,47 @@ int init_aes_key() {
 struct evp_key {
     EVP_PKEY *pkey;
 
+    // featured info for each key type
     void *param;
-    void (*get_optional_params)(OSSL_PARAM *, void *);
+    int (*set_optional_params)(EVP_PKEY_CTX *, void *);
     void (*free_param)(void *);
 };
 
-#define EVP_PKEY_OPERATOR(func, ctx, in, ilen, out, olen)                            \
-    EVP_PKEY_CTX *pkey_ctx = NULL;                                                   \
-    OSSL_PARAM params[5];                                                            \
-    int ret = E_OK, buf_len = 0;                                                     \
-                                                                                     \
-    if (unlikely(!ctx || !ctx->context || !in || !out)) return E_PARAM;              \
-    struct evp_key *ek = (struct evp_key *)(ctx->context);                           \
-    assert(ek->pkey);                                                                \
-                                                                                     \
-    /* create evp pkey ctx */                                                        \
-    OSSL_LIB_CTX *libctx = NULL;                                                     \
-    const char *propq = NULL;                                                        \
-    pkey_ctx = EVP_PKEY_CTX_new_from_pkey(libctx, ek->pkey, propq);                  \
-    if (unlikely(!pkey_ctx)) return E_EVP;                                           \
-                                                                                     \
-    /* If no optional parameters are required then NULL can be passed */             \
-    if (ek->param) {                                                                 \
-        assert(ek->get_optional_params);                                             \
-        ek->get_optional_params(params, ek->param);                                  \
-    } else {                                                                         \
-        *params = OSSL_PARAM_construct_end();                                        \
-    }                                                                                \
-    if (EVP_PKEY_##func##_init_ex(pkey_ctx, params) < 1) goto err;                   \
-                                                                                     \
-    /* calculate the size required to hold the #func data */                         \
-    if (EVP_PKEY_##func(pkey_ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) goto err; \
-    if ((olen < buf_len) ? (ret = E_BUFLEN) : 0) goto out;                           \
-    if (EVP_PKEY_##func(pkey_ctx, out, (size_t *)(&ret), in, ilen) == 1) goto out;   \
-                                                                                     \
-    /* fprintf(stdout, #func " result:\n"); */                                       \
-    /* BIO_dump_indent_fp(stdout, out, ret, 2); */                                   \
-    /* fprintf(stdout, "\n"); */                                                     \
-                                                                                     \
-    err:                                                                             \
-    ret = E_EVP;                                                                     \
-    out:                                                                             \
-    /* EVP_PKEY_CTX_free(pkey_ctx); */                                               \
+#define EVP_PKEY_OPERATOR(func, ctx, in, ilen, out, olen)                              \
+    EVP_PKEY_CTX *pkey_ctx = NULL;                                                     \
+    int ret = E_OK, buf_len = 0;                                                       \
+                                                                                       \
+    if (unlikely(!ctx || !ctx->context || !in || !out)) return E_PARAM;                \
+    struct evp_key *ek = (struct evp_key *)(ctx->context);                             \
+    assert(ek->pkey);                                                                  \
+                                                                                       \
+    /* create evp pkey ctx */                                                          \
+    pkey_ctx = EVP_PKEY_CTX_new(ek->pkey, NULL);                                       \
+    if (unlikely(!pkey_ctx)) goto err;                                                 \
+                                                                                       \
+    if (EVP_PKEY_##func##_init(pkey_ctx) < 1) goto err;                                \
+                                                                                       \
+    /* If no optional parameters are required then NULL can be passed */               \
+    if (ek->param) {                                                                   \
+        assert(ek->set_optional_params);                                               \
+        if ((ret = ek->set_optional_params(pkey_ctx, ek->param)) < 0) goto err;        \
+    }                                                                                  \
+    /* calculate the size required to hold the #func data */                           \
+    if (EVP_PKEY_##func(pkey_ctx, NULL, (size_t *)&buf_len, in, ilen) < 1) goto err;   \
+    if ((olen < buf_len) ? (ret = E_BUFLEN) : 0) goto out;                             \
+    if ((ret = EVP_PKEY_##func(pkey_ctx, out, (size_t *)(&buf_len), in, ilen)) == 1) { \
+        ret = buf_len;                                                                 \
+        goto out;                                                                      \
+    }                                                                                  \
+                                                                                       \
+    /* fprintf(stdout, #func " result:\n"); */                                         \
+    /* BIO_dump_indent_fp(stdout, out, ret, 2); */                                     \
+    /* fprintf(stdout, "\n"); */                                                       \
+                                                                                       \
+    err:                                                                               \
+    ret = E_EVP;                                                                       \
+    out:                                                                               \
+    EVP_PKEY_CTX_free(pkey_ctx);                                                       \
     return ret;
 
 int key_evp_encrypt(const struct key_context *ctx, const uint8_t *in, const int ilen, uint8_t *out,
@@ -461,7 +459,6 @@ int key_evp_sign(const struct key_context *ctx, const uint8_t *in, const int ile
 int key_evp_verify(const struct key_context *ctx, const uint8_t *in, const int ilen,
                    const uint8_t *sig, const int slen) {
     EVP_PKEY_CTX *pkey_ctx = NULL;
-    OSSL_PARAM params[5];
     int ret = E_OK, buf_len = 0;
 
     if (unlikely(!ctx || !ctx->context || !in || !sig)) return E_PARAM;
@@ -469,19 +466,16 @@ int key_evp_verify(const struct key_context *ctx, const uint8_t *in, const int i
     assert(ek->pkey);
 
     /* create evp pkey */
-    OSSL_LIB_CTX *libctx = NULL;
-    const char *propq = NULL;
-    pkey_ctx = EVP_PKEY_CTX_new_from_pkey(libctx, ek->pkey, propq);
-    if (unlikely(!pkey_ctx)) return E_EVP;
+    pkey_ctx = EVP_PKEY_CTX_new(ek->pkey, NULL);
+    if (unlikely(!pkey_ctx)) goto err;
+
+    if (EVP_PKEY_verify_init(pkey_ctx) < 1) goto err;
 
     /* If no optional parameters are required then NULL can be passed */
     if (ek->param) {
-        assert(ek->get_optional_params);
-        ek->get_optional_params(params, ek->param);
-    } else {
-        *params = OSSL_PARAM_construct_end();
+        assert(ek->set_optional_params);
+        if ((ret = ek->set_optional_params(pkey_ctx, ek->param)) < 0) goto err;
     }
-    if (EVP_PKEY_verify_init_ex(pkey_ctx, params) < 1) goto err;
 
     if (EVP_PKEY_verify(pkey_ctx, sig, (size_t)slen, in, ilen) == 1) goto out;
 
@@ -690,31 +684,19 @@ struct rsa_param {
     int padding;
 };
 
-void get_rsa_optional_params(OSSL_PARAM *p, void *ep) {
-    assert(p && ep);
-    struct rsa_param *rp = (struct rsa_param *)ep;
+int set_rsa_optional_params(EVP_PKEY_CTX *ctx, void *ep) {
+    int ret = E_OK;
 
-    /* 1. set padding */
-    switch (rp->padding) {
-            /* "pkcs1" is used by default if the padding mode is not set */
-        case RSA_PKCS1_PADDING:
-            break;
-        case RSA_PKCS1_OAEP_PADDING: {
-            *p++ = OSSL_PARAM_construct_utf8_string(OSSL_ASYM_CIPHER_PARAM_PAD_MODE,
-                                                    OSSL_PKEY_RSA_PAD_MODE_OAEP, 0);
-        } break;
-        case RSA_PKCS1_PSS_PADDING:
-            break;
-        default:
-            break;
+    assert(ctx && ep);
+    struct rsa_param *rp = (struct rsa_param *)ep;
+    logger_trace("rsa padding: %d", rp->padding);
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, rp->padding) < 1) {
+        ret = E_EVP;
+        goto err;
     }
 
-    /* 2. set hash method */
-    // /* "SHA1" is used if this is not set */
-    // *p++ = OSSL_PARAM_construct_utf8_string(OSSL_ASYM_CIPHER_PARAM_OAEP_DIGEST,
-    //                                         "SHA256", 0);
-
-    *p = OSSL_PARAM_construct_end();
+err:
+    return ret;
 }
 
 int create_rsa_key(struct key_context *ctx, const enum key_type type) {
@@ -727,14 +709,6 @@ int create_rsa_key(struct key_context *ctx, const enum key_type type) {
     struct evp_key *ek = (struct evp_key *)malloc(sizeof(struct evp_key) + 1);
     struct rsa_param *rp = (struct rsa_param *)malloc(sizeof(struct rsa_param) + 1);
     if ((!ek || !rp) ? (ret = E_MEM) : 0) goto err;
-
-    /* Create context using RSA algorithm. "RSA-PSS" could also be used here. */
-    OSSL_LIB_CTX *libctx = NULL;
-    const char *propq = NULL;
-    if (!(genctx = EVP_PKEY_CTX_new_from_name(libctx, "RSA", propq))) goto rsar;
-
-    /* Initialize context for key generation purposes. */
-    if (EVP_PKEY_keygen_init(genctx) < 1) goto rsar;
 
     /*
      * Here we set the number of bits to use in the RSA key.
@@ -753,31 +727,15 @@ int create_rsa_key(struct key_context *ctx, const enum key_type type) {
         default:
             assert(0);
     }
-    if (EVP_PKEY_CTX_set_rsa_keygen_bits(genctx, bits) < 1) goto rsar;
 
-    /*
-     * It is possible to create an RSA key using more than two primes.
-     * Do not do this unless you know why you need this.
-     * You ordinarily do not need to specify this, as the default is two.
-     *
-     * Both of these parameters can also be set via EVP_PKEY_CTX_set_params, but
-     * these functions provide a more concise way to do so.
-     */
-    if (EVP_PKEY_CTX_set_rsa_keygen_primes(genctx, primes) < 1) goto rsar;
+    genctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (!genctx) goto rsar;                                            /* Error occurred */
+    if (EVP_PKEY_keygen_init(genctx) < 1) goto rsar;                   /* Error */
+    if (EVP_PKEY_CTX_set_rsa_keygen_bits(genctx, bits) < 1) goto rsar; /* Error */
 
-    /*
-     * Generating an RSA key with a number of bits large enough to be secure for
-     * modern applications can take a fairly substantial amount of time (e.g.
-     * one second). If you require fast key generation, consider using an EC key
-     * instead.
-     *
-     * If you require progress information during the key generation process,
-     * you can set a progress callback using EVP_PKEY_set_cb; see the example in
-     * EVP_PKEY_generate(3).
-     */
-    if (EVP_PKEY_generate(genctx, &pkey) < 1) goto rsar;
+    /* Generate key */
+    if (EVP_PKEY_keygen(genctx, &pkey) < 1) goto rsar; /* free evp pkey context */
 
-    /* free evp pkey context */
     EVP_PKEY_CTX_free(genctx);
 
     assert(ctx);
@@ -785,7 +743,7 @@ int create_rsa_key(struct key_context *ctx, const enum key_type type) {
 
     ek->pkey = pkey;
     ek->param = (void *)rp;
-    ek->get_optional_params = &get_rsa_optional_params;
+    ek->set_optional_params = &set_rsa_optional_params;
     ek->free_param = &free;
 
     ctx->type = type;
@@ -835,68 +793,55 @@ int init_rsa_key() {
 }
 
 /********************************ECDSA***********************************/
-void get_ec_optional_params(OSSL_PARAM *p, void *ep) {
-    assert(p);
+int set_ec_optional_params(EVP_PKEY_CTX *ctx, void *ep) {
+    int ret = E_OK;
+    assert(ctx && ep);
 
-    *p = OSSL_PARAM_construct_end();
+err:
+    return ret;
 }
 
 struct key_operation key_ec_operation = {
     NULL, NULL, &key_evp_sign, &key_evp_verify, &get_evp_pubkey, &get_evp_prikey};
 
-const char *get_curve_name_by_key_type(const enum key_type type) {
+int set_curve_name_by_key_type(EVP_PKEY_CTX *genctx, const enum key_type type) {
+    int ret = E_OK;
     switch (type) {
-        case KEY_EC_P256:
-            return "P-256";
+        case KEY_EC_P256: {
+            if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(genctx, NID_secp256k1) < 1) ret = E_GENEC;
+        } break;
         default:
-            return "";
+            ret = E_PARAM;
     }
+
+err:
+    return ret;
 }
 
 int create_ec_key(struct key_context *ctx, const enum key_type type) {
     EVP_PKEY_CTX *genctx = NULL;
     EVP_PKEY *pkey = NULL;
-    OSSL_PARAM params[5];
-    int use_cofactordh = 1;
     int ret = E_OK;
-
-    const char *curvename = get_curve_name_by_key_type(type);
-    if (!curvename) return E_PARAM;
 
     /* create ec key context */
     struct evp_key *ek = (struct evp_key *)malloc(sizeof(struct evp_key) + 1);
     if (unlikely(!ek)) return E_MEM;
 
-    /* Create context using EC algorithm. */
-    OSSL_LIB_CTX *libctx = NULL;
-    const char *propq = NULL;
-    if (!(genctx = EVP_PKEY_CTX_new_from_name(libctx, "EC", propq))) goto err;
-
-    /* Initialize context for key generation purposes. */
+    genctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
+    if (!genctx) goto err;
     if (EVP_PKEY_keygen_init(genctx) < 1) goto err;
+    if ((ret = set_curve_name_by_key_type(genctx, type)) < 0) goto err;
 
-    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *)curvename, 0);
-    /*
-     * This is an optional parameter.
-     * For many curves where the cofactor is 1, setting this has no effect.
-     */
-    params[1] = OSSL_PARAM_construct_int(OSSL_PKEY_PARAM_USE_COFACTOR_ECDH, &use_cofactordh);
-    params[2] = OSSL_PARAM_construct_end();
+    /* Generate key */
+    if (EVP_PKEY_keygen(genctx, &pkey) < 1) goto err;
 
-    /* set params */
-    if (EVP_PKEY_CTX_set_params(genctx, params) < 1) goto err;
-
-    /* generate EC key */
-    if (EVP_PKEY_generate(genctx, &pkey) < 1) goto err;
-
-    /* free evp pkey context */
     EVP_PKEY_CTX_free(genctx);
 
     assert(ctx);
     ek->pkey = pkey;
 
     ek->param = NULL;
-    ek->get_optional_params = &get_ec_optional_params;
+    ek->set_optional_params = &set_ec_optional_params;
     ek->free_param = &free;
 
     ctx->type = type;
